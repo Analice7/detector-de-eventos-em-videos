@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 from pathlib import Path
 import sys
-from src.preprocessing.extract_frames import extrair_frames #, pre_processar_frame
+from src.preprocessing.dataProcesser import extrair_frames #, pre_processar_frame
 
 def extract_keypoints_from_frames(frames: list, output_dir: str) -> None:
 
