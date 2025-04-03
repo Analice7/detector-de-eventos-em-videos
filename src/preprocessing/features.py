@@ -2,6 +2,12 @@ import numpy as np
 import warnings
 from pathlib import Path
 import matplotlib.pyplot as plt
+import matplotlib
+import random
+import shutil
+import os
+
+FEATURE_SIZE = 100  # Tamanho fixo para todas as features
 
 def load_keypoints_sequence(keypoints_dir):
     """Carrega a sequência de keypoints dos arquivos .npy"""
@@ -276,13 +282,64 @@ def process_dataset(base_keypoints_dir, output_base_dir, feature_type="all", nor
                 feature_type=feature_type,
                 normalize=normalize
             )
+    split(
+        base_dir='data/processed/sequences',
+        output_dir='data/splits'
+    )
 
 # Desabilitar mensagens de aviso do matplotlib para evitar problemas de QT
 warnings.filterwarnings("ignore")
 
 # Definir backend não-interativo para matplotlib
-import matplotlib
 matplotlib.use('Agg')
+
+def split(base_dir, output_dir, ratios=(0.7, 0.1, 0.2), seed=42):
+    """
+    Divide os vídeos processados em pastas de treino, validação e teste.
+    
+    Args:
+        base_dir: Pasta com as classes (assault/normal) e vídeos processados
+        output_dir: Onde criar as pastas train/val/test
+        ratios: Proporções para (treino, validação, teste)
+        seed: Semente para reprodutibilidade
+    """
+    random.seed(seed)
+    
+    # Cria pastas de destino
+    for split in ['train', 'val', 'test']:
+        for classe in ['assault', 'normal']:
+            os.makedirs(f'{output_dir}/{split}/{classe}', exist_ok=True)
+    
+    # Para cada classe
+    for classe in ['assault', 'normal']:
+        videos = os.listdir(f'{base_dir}/{classe}')
+        random.shuffle(videos)
+        
+        n = len(videos)
+        n_train = int(n * ratios[0])
+        n_val = int(n * ratios[1])
+        
+        # Divide
+        train = videos[:n_train]
+        val = videos[n_train:n_train+n_val]
+        test = videos[n_train+n_val:]
+        
+        # Copia arquivos
+        for video in train:
+            src = f'{base_dir}/{classe}/{video}'
+            dst = f'{output_dir}/train/{classe}/{video}'
+            shutil.copytree(src, dst)
+        
+        for video in val:
+            src = f'{base_dir}/{classe}/{video}'
+            dst = f'{output_dir}/val/{classe}/{video}'
+            shutil.copytree(src, dst)
+        
+        for video in test:
+            src = f'{base_dir}/{classe}/{video}'
+            dst = f'{output_dir}/test/{classe}/{video}'
+            shutil.copytree(src, dst)
+
 
 if __name__ == "__main__":
     # Configurações
