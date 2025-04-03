@@ -21,22 +21,52 @@ class Config:
 
 # Dataset customizado
 class PoseDataset(Dataset):
-    def __init__(self, features_dir):
+    def __init__(self, features_dir, seq_length=Config.SEQUENCE_LENGTH):
         self.features = []
         self.labels = []
+        self.seq_length = seq_length
         
         # Carrega features e labels
         for class_idx, class_name in enumerate(['normal', 'assault']):
             class_dir = Path(features_dir) / class_name
             for video_dir in class_dir.iterdir():
                 if video_dir.is_dir():
-                    for seq_file in video_dir.glob('*.npy'):
-                        seq = np.load(seq_file, allow_pickle=True)
-                        self.features.append(seq)
-                        self.labels.append(class_idx)
-        
-        self.features = np.array(self.features)
-        self.labels = np.array(self.labels)
+                    feature_file = video_dir / 'features.npy'
+                    if feature_file.exists():
+                        try:
+                            # Carregar a matriz de features (n_frames x n_features)
+                            feature_data = np.load(feature_file)
+                            
+                            # Verificar se os dados têm forma adequada
+                            if len(feature_data.shape) == 2:
+                                # Se o arquivo contém a matriz de sequência
+                                n_frames, n_features = feature_data.shape
+                                
+                                # Processar a sequência em pedaços de tamanho seq_length
+                                for i in range(0, n_frames - self.seq_length + 1, self.seq_length // 2):  # Sobreposição de 50%
+                                    seq = feature_data[i:i+self.seq_length]
+                                    if len(seq) == self.seq_length:  # Garantir que temos uma sequência completa
+                                        self.features.append(seq)
+                                        self.labels.append(class_idx)
+                            elif isinstance(feature_data, dict):
+                                # Compatibilidade com o formato antigo (dicionário)
+                                print(f"Formato antigo detectado em {feature_file}, convertendo...")
+                                feature_keys = sorted(feature_data.keys())
+                                n_frames = len(feature_data[feature_keys[0]])
+                                
+                                # Criar matriz de sequência
+                                seq_matrix = np.zeros((n_frames, len(feature_keys)))
+                                for i, key in enumerate(feature_keys):
+                                    seq_matrix[:, i] = feature_data[key]
+                                
+                                # Processar a sequência em pedaços
+                                for i in range(0, n_frames - self.seq_length + 1, self.seq_length // 2):
+                                    seq = seq_matrix[i:i+self.seq_length]
+                                    if len(seq) == self.seq_length:
+                                        self.features.append(seq)
+                                        self.labels.append(class_idx)
+                        except Exception as e:
+                            print(f"Erro ao carregar {feature_file}: {e}")
 
     def __len__(self):
         return len(self.labels)

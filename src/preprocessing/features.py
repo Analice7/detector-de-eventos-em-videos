@@ -198,29 +198,45 @@ def process_video_keypoints(keypoints_dir, output_dir=None, feature_type="all", 
             return {}
         
         # Extrair características
-        features = extract_features(keypoints_sequence, feature_type, normalize)
+        features_dict = extract_features(keypoints_sequence, feature_type, normalize)
         
-        if not features:
+        if not features_dict:
             print(f"Nenhuma característica extraída de {keypoints_dir}")
             return {}
+        
+        # Converter o dicionário em uma sequência de valores para treinamento
+        # Cada frame será representado por um vetor contendo todas as características
+        n_frames = len(next(iter(features_dict.values())))
+        feature_keys = sorted(features_dict.keys())  # Ordena as chaves para consistência
+        
+        # Inicializar matriz de sequência (n_frames x n_features)
+        feature_sequence = np.zeros((n_frames, len(feature_keys)))
+        
+        # Preencher a matriz
+        for i, key in enumerate(feature_keys):
+            feature_sequence[:, i] = features_dict[key]
         
         # Salvar se o diretório de saída for especificado
         if output_dir:
             output_dir = Path(output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
             
-            np.save(output_dir / "features.npy", features)
+            # Salvar o dicionário original para referência/visualização
+            np.save(output_dir / "features_dict.npy", features_dict)
+            
+            # Salvar a sequência para treinamento
+            np.save(output_dir / "features.npy", feature_sequence)
             
             # Tentar gerar visualização se houver características
             try:
                 plt.figure(figsize=(12, 6))
                 
                 # Selecionar até 5 características (se disponíveis)
-                keys_to_plot = list(features.keys())[:min(5, len(features))]
+                keys_to_plot = list(features_dict.keys())[:min(5, len(features_dict))]
                 
                 if keys_to_plot:
                     for key in keys_to_plot:
-                        plt.plot(features[key], label=key)
+                        plt.plot(features_dict[key], label=key)
                     
                     plt.title("Exemplo de Características Extraídas")
                     plt.xlabel("Frame")
@@ -233,7 +249,7 @@ def process_video_keypoints(keypoints_dir, output_dir=None, feature_type="all", 
             except Exception as e:
                 print(f"Erro ao gerar visualização: {e}")
         
-        return features
+        return features_dict
     
     except Exception as e:
         print(f"Erro ao processar vídeo {keypoints_dir}: {e}")
