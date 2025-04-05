@@ -1,19 +1,49 @@
 import cv2
 from pytube import YouTube
 import tempfile
+import os
+import logging
+from pathlib import Path
+import uuid
 
 def download_youtube_video(url):
-    yt = YouTube(url)   
-    video_resolucao = yt.streams.filter(progressive=True, file_extension="mp4").order_by('resolution').desc().first()
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+
+    # Caminho absoluto para o cookies.txt
+    cookies_path = Path(__file__).parent.parent.parent / "cookies.txt"
+    cookies_str = str(cookies_path.resolve())
+
+    try:
+        import importlib.util
+        if importlib.util.find_spec("yt_dlp"):
+            logger.info("Tentando baixar com yt-dlp com cookies...")
+            from yt_dlp import YoutubeDL
+
+            # Cria um nome de arquivo único no diretório temporário
+            temp_filename = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}.mp4")
+
+            ydl_opts = {
+                'format': 'best[ext=mp4]/best',
+                'outtmpl': temp_filename,
+                'quiet': True,
+                'cookiefile': cookies_str,
+            }
+
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                title = info.get('title', 'Video')
+
+            if os.path.exists(temp_filename) and os.path.getsize(temp_filename) > 100 * 1024:
+                logger.info(f"Vídeo baixado com sucesso via yt-dlp: {title}")
+                return temp_filename, title
+            else:
+                logger.error("Arquivo de vídeo corrompido ou incompleto")
+
+    except Exception as e:
+        logger.error(f"Erro ao baixar com yt-dlp: {str(e)}")
     
-    # Create a temporary file
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-    temp_file.close()
-    
-    # Download the video
-    video_resolucao.download(filename=temp_file.name)
-    
-    return temp_file.name, yt.title
+    return None, None
 
 def extrair_frames(filepath, f=5):
     if filepath:
