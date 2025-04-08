@@ -8,8 +8,16 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
 
-def gerar_relatorio_metricas(metrics_df, output_dir, nome_video=None):
-    """Gera relatório com métricas e análises"""
+def gerar_relatorio_metricas(metrics_df, output_dir, nome_video=None, fps=None):
+    """
+    Gera relatório com métricas e análises
+    
+    Args:
+        metrics_df: DataFrame com métricas calculadas
+        output_dir: Diretório para salvar o relatório
+        nome_video: Nome do vídeo (opcional)
+        fps: Frames por segundo do vídeo (opcional)
+    """
     output_dir = Path(output_dir)
     if nome_video:
         report_path = output_dir / f"quality_report_{nome_video}.txt"
@@ -21,6 +29,10 @@ def gerar_relatorio_metricas(metrics_df, output_dir, nome_video=None):
         if nome_video:
             titulo += f" - {nome_video}"
         f.write(f"{titulo}\n\n")
+        
+        # Informações sobre o frame rate
+        if fps:
+            f.write(f"Frame Rate: {fps} FPS\n\n")
         
         # Estatísticas gerais
         f.write("ESTATÍSTICAS GERAIS:\n")
@@ -46,11 +58,31 @@ def gerar_relatorio_metricas(metrics_df, output_dir, nome_video=None):
         # Métricas temporais
         if 'velocidade_media' in metrics_df.columns:
             f.write("ESTABILIDADE TEMPORAL:\n")
-            f.write(f"Velocidade média: {metrics_df['velocidade_media'].mean():.4f}\n")
+            f.write(f"Velocidade média: {metrics_df['velocidade_media'].mean():.4f}")
+            
+            # Adiciona informação ajustada pelo frame rate se disponível
+            if fps and 'velocidade_media_real' in metrics_df.columns:
+                f.write(f" (Ajustada ao tempo real: {metrics_df['velocidade_media_real'].mean():.4f} unidades/s)\n")
+            else:
+                f.write("\n")
+                
             if 'aceleracao_media' in metrics_df.columns:
-                f.write(f"Aceleração média: {metrics_df['aceleracao_media'].mean():.4f}\n")
+                f.write(f"Aceleração média: {metrics_df['aceleracao_media'].mean():.4f}")
+                
+                # Adiciona informação ajustada pelo frame rate se disponível
+                if fps and 'aceleracao_media_real' in metrics_df.columns:
+                    f.write(f" (Ajustada ao tempo real: {metrics_df['aceleracao_media_real'].mean():.4f} unidades/s²)\n")
+                else:
+                    f.write("\n")
+                    
             if 'jitter_medio' in metrics_df.columns:
-                f.write(f"Jitter médio: {metrics_df['jitter_medio'].mean():.4f}\n\n")
+                f.write(f"Jitter médio: {metrics_df['jitter_medio'].mean():.4f}")
+                
+                # Adiciona informação ajustada pelo frame rate se disponível
+                if fps and 'jitter_medio_real' in metrics_df.columns:
+                    f.write(f" (Ajustado ao tempo real: {metrics_df['jitter_medio_real'].mean():.4f})\n\n")
+                else:
+                    f.write("\n\n")
         
         # Estabilidade anatômica
         anatomia_cols = [col for col in metrics_df.columns if 'simetria' in col or 'tronco' in col]
@@ -61,40 +93,108 @@ def gerar_relatorio_metricas(metrics_df, output_dir, nome_video=None):
                     f.write(f"{col}: {metrics_df[col].mean():.4f}\n")
             f.write("\n")
         
+        # Análise de Qualidade com base no Frame Rate
+        if fps:
+            f.write("ANÁLISE DE QUALIDADE BASEADA NO FRAME RATE:\n")
+            if fps < 15:
+                f.write("Frame rate baixo (<15 FPS): Possível perda de detalhes em movimentos rápidos.\n")
+                f.write("Recomendação: Considere interpolar keypoints ou usar modelo otimizado para baixo frame rate.\n\n")
+            elif fps >= 15 and fps < 30:
+                f.write("Frame rate moderado (15-30 FPS): Adequado para a maioria dos movimentos normais.\n")
+                f.write("Recomendação: Monitorar qualidade em seções com movimento rápido.\n\n")
+            else:
+                f.write("Frame rate alto (>30 FPS): Excelente para capturar movimentos rápidos ou detalhados.\n")
+                f.write("Recomendação: Verificar se há sobrecarga computacional desnecessária.\n\n")
+        
         # Conclusão e avaliação
         f.write("CONCLUSÃO:\n")
         qualidade = "Não foi possível avaliar"
         if 'completude_media' in metrics_df.columns and 'confianca_media' in metrics_df.columns:
             completude_avg = metrics_df['completude_media'].mean()
             confianca_avg = metrics_df['confianca_media'].mean()
-            if completude_avg > 90 and confianca_avg > 0.8:
-                qualidade = "Excelente"
-            elif completude_avg > 80 and confianca_avg > 0.7:
-                qualidade = "Boa"
-            elif completude_avg > 70 and confianca_avg > 0.6:
-                qualidade = "Razoável"
+            
+            # Ajuste dos limiares com base no frame rate
+            if fps:
+                # Para FPS baixo, somos um pouco mais tolerantes com a qualidade
+                if fps < 15:
+                    if completude_avg > 85 and confianca_avg > 0.75:
+                        qualidade = "Excelente"
+                    elif completude_avg > 75 and confianca_avg > 0.65:
+                        qualidade = "Boa"
+                    elif completude_avg > 65 and confianca_avg > 0.55:
+                        qualidade = "Razoável"
+                    else:
+                        qualidade = "Baixa"
+                # Para FPS alto, podemos ser mais exigentes
+                elif fps >= 30:
+                    if completude_avg > 92 and confianca_avg > 0.85:
+                        qualidade = "Excelente"
+                    elif completude_avg > 85 and confianca_avg > 0.75:
+                        qualidade = "Boa"
+                    elif completude_avg > 75 and confianca_avg > 0.65:
+                        qualidade = "Razoável"
+                    else:
+                        qualidade = "Baixa"
+                # Para FPS médio, usamos os limiares originais
+                else:
+                    if completude_avg > 90 and confianca_avg > 0.8:
+                        qualidade = "Excelente"
+                    elif completude_avg > 80 and confianca_avg > 0.7:
+                        qualidade = "Boa"
+                    elif completude_avg > 70 and confianca_avg > 0.6:
+                        qualidade = "Razoável"
+                    else:
+                        qualidade = "Baixa"
+            # Se não temos informação sobre FPS, usamos os limiares originais
             else:
-                qualidade = "Baixa"
+                if completude_avg > 90 and confianca_avg > 0.8:
+                    qualidade = "Excelente"
+                elif completude_avg > 80 and confianca_avg > 0.7:
+                    qualidade = "Boa"
+                elif completude_avg > 70 and confianca_avg > 0.6:
+                    qualidade = "Razoável"
+                else:
+                    qualidade = "Baixa"
+                    
         f.write(f"Qualidade geral da detecção: {qualidade}\n")
         
         # Recomendações
         f.write("\nRECOMENDAÇÕES:\n")
         if qualidade == "Baixa":
             f.write("- Melhorar a iluminação do vídeo\n- Verificar presença de oclusões\n- Usar modelo de pose mais robusto\n")
+            if fps and fps < 15:
+                f.write("- Considerar aumentar o frame rate para melhorar a detecção\n")
         elif qualidade == "Razoável":
             f.write("- Considerar aplicar suavização temporal\n- Ajustar parâmetros de detecção\n")
+            if fps and fps < 20:
+                f.write("- Avaliar se o frame rate atual é adequado para o tipo de movimento\n")
         else:
             f.write("- Detecção adequada para a maioria das aplicações\n")
+            if fps and fps > 60:
+                f.write("- O frame rate atual pode ser excessivo, considere reduzir para economia de processamento\n")
     
     print(f"Relatório de qualidade salvo em: {report_path}")
     return report_path
 
-def calcular_metricas_avancadas(all_keypoints, smoothed_keypoints=None, confidence_scores=None):
-    """Calcula métricas avançadas para a sequência de keypoints"""
+def calcular_metricas_avancadas(all_keypoints, smoothed_keypoints=None, confidence_scores=None, fps=None):
+    """
+    Calcula métricas avançadas para a sequência de keypoints
+    
+    Args:
+        all_keypoints: Lista de arrays numpy com keypoints para cada frame
+        smoothed_keypoints: Lista de arrays numpy com keypoints suavizados (opcional)
+        confidence_scores: Lista de arrays numpy com scores de confiança (opcional)
+        fps: Frames por segundo do vídeo (opcional)
+    """
     result_data = []
     
     # Usar os keypoints suavizados se disponíveis, senão usa os originais
     keypoints_to_analyze = smoothed_keypoints if smoothed_keypoints is not None else all_keypoints
+    
+    # Determinar o fator de tempo real (segundos por frame)
+    time_factor = 1.0
+    if fps is not None and fps > 0:
+        time_factor = 1.0 / fps
     
     for frame_idx, keypoints in enumerate(keypoints_to_analyze):
         # Inicializa com valores padrão
@@ -102,9 +202,20 @@ def calcular_metricas_avancadas(all_keypoints, smoothed_keypoints=None, confiden
             'frame': frame_idx,
             'velocidade_media': 0.0,
             'aceleracao_media': 0.0,
+            'jitter_medio': 0.0,
             'fluidez_movimento': 0.0,
-            'confianca_media': 0.0
+            'confianca_media': 0.0,
+            'confianca_min': 0.0,
+            'confianca_std': 0.0
         }
+        
+        # Adicionar métricas ajustadas pelo frame rate
+        if fps is not None:
+            metrics.update({
+                'velocidade_media_real': 0.0,  # unidades/segundo
+                'aceleracao_media_real': 0.0,  # unidades/segundo²
+                'jitter_medio_real': 0.0       # ajustado pelo tempo
+            })
         
         # Se não houver keypoints, adicione os valores padrão
         if keypoints is None or len(keypoints) == 0:
@@ -115,14 +226,18 @@ def calcular_metricas_avancadas(all_keypoints, smoothed_keypoints=None, confiden
         if len(keypoints.shape) == 3:
             keypoints = keypoints[0]
             
-        # Calcula confiança média, se disponível
+        # Calcula confiança média, mínima e desvio padrão, se disponível
         if confidence_scores is not None and frame_idx < len(confidence_scores) and confidence_scores[frame_idx] is not None:
             conf_scores = confidence_scores[frame_idx]
             # Verifica se os scores são para várias partes do corpo
             if isinstance(conf_scores, np.ndarray) and conf_scores.size > 1:
                 metrics['confianca_media'] = np.nanmean(conf_scores)
+                metrics['confianca_min'] = np.nanmin(conf_scores)
+                metrics['confianca_std'] = np.nanstd(conf_scores)
             elif isinstance(conf_scores, (float, int)):
                 metrics['confianca_media'] = float(conf_scores)
+                metrics['confianca_min'] = float(conf_scores)
+                metrics['confianca_std'] = 0.0
         
         # Cálculo de velocidade e aceleração (se houver frames anteriores)
         if frame_idx > 0 and frame_idx < len(keypoints_to_analyze) - 1:
@@ -147,6 +262,10 @@ def calcular_metricas_avancadas(all_keypoints, smoothed_keypoints=None, confiden
                         velocidades = np.sqrt(np.nansum((keypoints - prev_keypoints)**2, axis=1))
                         metrics['velocidade_media'] = np.nanmean(velocidades)
                         
+                        # Ajusta para tempo real se FPS fornecido
+                        if fps is not None:
+                            metrics['velocidade_media_real'] = metrics['velocidade_media'] * fps
+                        
                         # Calcula aceleração usando a diferença de velocidades
                         vel_atual = np.sqrt(np.nansum((keypoints - prev_keypoints)**2, axis=1))
                         vel_prox = np.sqrt(np.nansum((next_keypoints - keypoints)**2, axis=1))
@@ -154,63 +273,60 @@ def calcular_metricas_avancadas(all_keypoints, smoothed_keypoints=None, confiden
                         
                         metrics['aceleracao_media'] = np.nanmean(aceleracoes)
                         
+                        # Ajusta para tempo real se FPS fornecido
+                        if fps is not None:
+                            metrics['aceleracao_media_real'] = metrics['aceleracao_media'] * (fps ** 2)
+                        
                         # Fluidez como inverso da variância das acelerações
                         if len(aceleracoes) > 0:
                             metrics['fluidez_movimento'] = 1.0 / (1.0 + np.nanvar(aceleracoes))
+                            
+                        # Calcula jitter como variação média da posição ajustada pela velocidade
+                        # Jitter é maior quando há mudanças bruscas não consistentes com a velocidade geral
+                        if frame_idx > 1:
+                            prev_prev_keypoints = keypoints_to_analyze[frame_idx - 2]
+                            if prev_prev_keypoints is not None and len(prev_prev_keypoints) > 0:
+                                if len(prev_prev_keypoints.shape) == 3:
+                                    prev_prev_keypoints = prev_prev_keypoints[0]
+                                
+                                if prev_prev_keypoints.shape == prev_keypoints.shape:
+                                    # Calcula diferença entre direções consecutivas (0=suave, valores altos=instável)
+                                    dir_prev = prev_keypoints - prev_prev_keypoints
+                                    dir_curr = keypoints - prev_keypoints
+                                    
+                                    # Normaliza direções para comparar apenas ângulos
+                                    dir_prev_norm = dir_prev / (np.sqrt(np.nansum(dir_prev**2, axis=1))[:, np.newaxis] + 1e-10)
+                                    dir_curr_norm = dir_curr / (np.sqrt(np.nansum(dir_curr**2, axis=1))[:, np.newaxis] + 1e-10)
+                                    
+                                    # Calcular o produto escalar para obter coseno do ângulo
+                                    dot_products = np.nansum(dir_prev_norm * dir_curr_norm, axis=1)
+                                    # Limitar para [-1, 1] para evitar erros numéricos
+                                    dot_products = np.clip(dot_products, -1.0, 1.0)
+                                    # Converter para ângulos (0=mesma direção, pi=direção oposta)
+                                    angles = np.arccos(dot_products)
+                                    
+                                    # Jitter é a média desses ângulos, normalizado para [0,1]
+                                    metrics['jitter_medio'] = np.nanmean(angles) / np.pi
+                                    
+                                    # Ajusta pelo frame rate se disponível
+                                    if fps is not None:
+                                        # Maior frame rate revela mais jitter
+                                        # Normaliza com um fator relacionado ao período de amostragem
+                                        metrics['jitter_medio_real'] = metrics['jitter_medio'] * (30.0 / fps if fps > 0 else 1.0)
         
         result_data.append(metrics)
     
     return pd.DataFrame(result_data)
 
-def calcular_metricas_avancadas(all_keypoints, smoothed_keypoints=None, confidence_scores=None):
-    """Calcula métricas avançadas para a sequência de keypoints"""
-    result_data = []
+def calcular_estabilidade_anatomica(all_keypoints, pose_connections, fps=None):
+    """
+    Calcula métricas de estabilidade anatômica para sequência de keypoints
     
-    # Usar os keypoints suavizados se disponíveis, senão usa os originais
-    keypoints_to_analyze = smoothed_keypoints if smoothed_keypoints is not None else all_keypoints
-    
-    for frame_idx, keypoints in enumerate(keypoints_to_analyze):
-        # Inicializa com valores padrão
-        metrics = {
-            'frame': frame_idx,
-            'velocidade_media': 0.0,
-            'aceleracao_media': 0.0,
-            'fluidez_movimento': 0.0,
-            'confianca_media': 0.0,
-            'confianca_min': 0.0,  # Adicionado valor padrão para confianca_min
-            'confianca_std': 0.0   # Também podemos adicionar o desvio padrão
-        }
-        
-        # Se não houver keypoints, adicione os valores padrão
-        if keypoints is None or len(keypoints) == 0:
-            result_data.append(metrics)
-            continue
-            
-        # Se for um array 3D (múltiplas pessoas), use apenas o primeiro conjunto
-        if len(keypoints.shape) == 3:
-            keypoints = keypoints[0]
-            
-        # Calcula confiança média, mínima e desvio padrão, se disponível
-        if confidence_scores is not None and frame_idx < len(confidence_scores) and confidence_scores[frame_idx] is not None:
-            conf_scores = confidence_scores[frame_idx]
-            # Verifica se os scores são para várias partes do corpo
-            if isinstance(conf_scores, np.ndarray) and conf_scores.size > 1:
-                metrics['confianca_media'] = np.nanmean(conf_scores)
-                metrics['confianca_min'] = np.nanmin(conf_scores)  # Calcula o mínimo
-                metrics['confianca_std'] = np.nanstd(conf_scores)   # Calcula o desvio padrão
-            elif isinstance(conf_scores, (float, int)):
-                metrics['confianca_media'] = float(conf_scores)
-                metrics['confianca_min'] = float(conf_scores)  # Se houver apenas um valor, mínimo = média
-                metrics['confianca_std'] = 0.0                 # Desvio padrão zero para um único valor
-        
-        # [resto da função permanece igual]
-        
-        result_data.append(metrics)
-    
-    return pd.DataFrame(result_data)
-
-def calcular_estabilidade_anatomica(all_keypoints, pose_connections):
-    """Calcula métricas de estabilidade anatômica para sequência de keypoints"""
+    Args:
+        all_keypoints: Lista de arrays numpy com keypoints para cada frame
+        pose_connections: Lista de pares de índices indicando conexões entre keypoints
+        fps: Frames por segundo (opcional)
+    """
     result_data = []
     
     for frame_idx, keypoints in enumerate(all_keypoints):
@@ -219,7 +335,8 @@ def calcular_estabilidade_anatomica(all_keypoints, pose_connections):
             result_data.append({
                 'frame': frame_idx,
                 'proporcao_valida': 0.0,
-                'simetria_corporal': 0.0
+                'simetria_corporal': 0.0,
+                'estabilidade_temporal': 0.0 if fps else None
             })
             continue
         
@@ -265,11 +382,37 @@ def calcular_estabilidade_anatomica(all_keypoints, pose_connections):
         # Calcular média das diferenças (simetria)
         simetria = 1.0 - (np.mean(left_right_diffs) if left_right_diffs else 0)
         
-        result_data.append({
+        # Métricas para resultados
+        result_metrics = {
             'frame': frame_idx,
             'proporcao_valida': proporcao_valida,
             'simetria_corporal': simetria
-        })
+        }
+        
+        # Adiciona medida de estabilidade temporal se tiver pelo menos 3 frames e fps fornecido
+        if frame_idx >= 2 and fps:
+            # Verifica frames anteriores para medir estabilidade temporal
+            prev_frames = [all_keypoints[i] for i in range(max(0, frame_idx-3), frame_idx)]
+            valid_prev_frames = [f for f in prev_frames if f is not None and len(f) > 0]
+            
+            if len(valid_prev_frames) >= 2:
+                # Calcula variação da posição ao longo do tempo, normalizada pelo fps
+                posicoes = []
+                for frame in valid_prev_frames:
+                    if len(frame.shape) == 3:
+                        frame = frame[0]
+                    # Usa o centroide como referência
+                    valid_kps = frame[~np.any(np.isnan(frame), axis=1)]
+                    if len(valid_kps) > 0:
+                        posicoes.append(np.mean(valid_kps, axis=0))
+                
+                if len(posicoes) >= 2:
+                    # Calcula variação média normalizada pelo intervalo de tempo
+                    diffs = [np.sqrt(np.sum((posicoes[i+1] - posicoes[i])**2)) for i in range(len(posicoes)-1)]
+                    temporal_stability = 1.0 / (1.0 + np.mean(diffs) * fps)
+                    result_metrics['estabilidade_temporal'] = temporal_stability
+        
+        result_data.append(result_metrics)
     
     return pd.DataFrame(result_data)
 
