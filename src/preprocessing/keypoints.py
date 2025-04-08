@@ -7,10 +7,9 @@ from ..metrics.keypoints import (
     gerar_visualizacoes_metricas,
     gerar_relatorio_metricas,
     calcular_metricas_avancadas,
-    calcular_estabilidade_anatomica
 )
 import sys
-from src.preprocessing.dataProcesser import extrair_frames
+from src.preprocessing.dataProcesser import extrair_frames, pre_processar_frame
 
 def aplicar_suavizacao_temporal(keypoints_sequence, window_size=5):
     """Aplica suavização temporal aos keypoints usando média móvel"""
@@ -62,25 +61,23 @@ def draw_keypoints(frame, keypoints, pose_connections):
     
     return frame_copy
 
-def extract_keypoints_extended(frames, output_dir, apply_smoothing=True, window_size=5, save_raw=True):
+def extract_keypoints_extended(frames, video_name, output_base_dir,  class_name,apply_smoothing=False, window_size=5):
     """Processa os frames e extrai keypoints"""
     try:
         model = YOLO('yolov8n-pose.pt')
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
         
-        raw_dir = output_dir / "raw"
-        vis_dir = output_dir / "visualizations"
-        smoothed_dir = output_dir / "smoothed"
+        # Novas estruturas de diretórios
+        base_dir = Path(output_base_dir)
         
-        raw_dir.mkdir(exist_ok=True)
-        vis_dir.mkdir(exist_ok=True)
+        # Diretório para dados não suavizados
+        no_smoothed_dir = base_dir / "no_smoothed" / class_name / video_name
+        no_smoothed_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Diretório para dados suavizados (se aplicável)
+        smoothed_dir = None
         if apply_smoothing:
-            smoothed_dir.mkdir(exist_ok=True)
-            
-        # Definição das conexões COCO
-        pose_connections = [(0,1), (0,2), (1,3), (2,4), (5,6), (5,7), (7,9), (6,8), (8,10), 
-                            (5,11), (6,12), (11,13), (12,14), (13,15), (14,16), (11,12)]
+            smoothed_dir = base_dir / "smoothed" / class_name / video_name
+            smoothed_dir.mkdir(parents=True, exist_ok=True)
         
         all_keypoints = []
         all_persons_keypoints = []  # Lista para armazenar keypoints de todas as pessoas
@@ -128,25 +125,18 @@ def extract_keypoints_extended(frames, output_dir, apply_smoothing=True, window_
                 frame_keypoints = kps_data.xyn.cpu().numpy()  # Todos os keypoints de todas as pessoas
                 frame_conf = kps_data.conf.cpu().numpy() if hasattr(kps_data, 'conf') and kps_data.conf is not None else None
                 
-                # Salva visualização em PNG com todas as pessoas
-                vis_frame = frame.copy()
-                for person_kpts in frame_keypoints:
-                    vis_frame = draw_keypoints(vis_frame, person_kpts, pose_connections)
-                cv2.imwrite(str(vis_dir / f"frame_{idx:05d}.png"), vis_frame)
-                
-                # Salva keypoints em numpy (opcional)
-                if save_raw:
-                    np.save(raw_dir / f"frame_{idx:05d}.npy", frame_keypoints)
-                
-                # Armazena keypoints
+                # Salva e armazena keypoints
                 if len(frame_keypoints) > 0:
+                    # Salva os keypoints de todas as pessoas detectadas
+                    np.save(no_smoothed_dir / f"frame_{idx:05d}.npy", frame_keypoints)
+                    
                     # Armazena keypoints da primeira pessoa para análises tradicionais
                     all_keypoints.append(frame_keypoints[0])
                     
                     # Armazena keypoints de todas as pessoas para novas análises
                     all_persons_keypoints.append(frame_keypoints)
                     
-                    # Armazena confiança da primeira pessoa ou média se houver várias
+                    # Armazena confiança da primeira pessoa
                     if frame_conf is not None:
                         if len(frame_conf.shape) == 2:  # Se for 2D (várias pessoas)
                             confidence_scores.append(frame_conf[0])
@@ -172,45 +162,58 @@ def extract_keypoints_extended(frames, output_dir, apply_smoothing=True, window_
         
         # Suavização temporal
         smoothed_keypoints = None
-        if apply_smoothing and any(kp is not None for kp in all_keypoints):
-            print("Aplicando suavização temporal...")
+        if apply_smoothing and any(len(frame_kps) > 0 for frame_kps in all_persons_keypoints):
+            print("Aplicando suavização temporal a TODAS as pessoas...")
             try:
-                valid_indices = [i for i, kp in enumerate(all_keypoints) if kp is not None]
-                valid_keypoints = [all_keypoints[i] for i in valid_indices]
+                # 1. Determina o número máximo de pessoas detectadas em qualquer frame
+                max_pessoas = max(len(frame_kps) for frame_kps in all_persons_keypoints)
                 
-                smoothed_valid = aplicar_suavizacao_temporal(valid_keypoints, window_size)
+                # 2. Suaviza cada pessoa individualmente
+                pessoas_suavizadas = []
+                for pessoa_idx in range(max_pessoas):
+                    # Coleta a sequência dessa pessoa em todos os frames
+                    sequencia_pessoa = []
+                    for frame_kps in all_persons_keypoints:
+                        if pessoa_idx < len(frame_kps):
+                            sequencia_pessoa.append(frame_kps[pessoa_idx])
+                        else:
+                            sequencia_pessoa.append(np.array([]))  # Placeholder se não detectado
+                    
+                    # Aplica suavização a essa pessoa
+                    pessoa_suavizada = aplicar_suavizacao_temporal(sequencia_pessoa, window_size)
+                    pessoas_suavizadas.append(pessoa_suavizada)
                 
-                smoothed_keypoints = [None] * len(all_keypoints)
-                for idx, smooth_kp in zip(valid_indices, smoothed_valid):
-                    if smooth_kp is not None and len(smooth_kp) > 0:
-                        smoothed_keypoints[idx] = smooth_kp
-                        np.save(smoothed_dir / f"frame_{idx:05d}.npy", smooth_kp)
+                # 3. Reorganiza os dados por frame
+                smoothed_by_frame = []
+                for frame_idx in range(len(all_persons_keypoints)):
+                    frame_data = []
+                    for pessoa_idx in range(max_pessoas):
+                        if frame_idx < len(pessoas_suavizadas[pessoa_idx]):
+                            kp = pessoas_suavizadas[pessoa_idx][frame_idx]
+                            if kp.size > 0:  # Filtra arrays vazios
+                                frame_data.append(kp)
+                    
+                    smoothed_by_frame.append(np.array(frame_data) if frame_data else np.array([]))
+                
+                # 4. Salva os resultados
+                for idx, frame_kps in enumerate(smoothed_by_frame):
+                    if len(frame_kps) > 0:
+                        np.save(smoothed_dir / f"frame_{idx:05d}.npy", frame_kps)
+                
+                # Mantém compatibilidade com o resto do código (opcional)
+                smoothed_keypoints = [frame_kps[0] if len(frame_kps) > 0 else None for frame_kps in smoothed_by_frame]
+                
             except Exception as e:
-                print(f"Erro na suavização temporal: {str(e)}")
+                print(f"Erro na suavização multi-pessoa: {str(e)}")
                 smoothed_keypoints = None
         
-        # Cálculo de métricas
-        print("Calculando métricas avançadas...")
-
-        # Métricas dos dados brutos (sempre geradas)
-        metrics_raw_df = calcular_metricas_avancadas(all_keypoints, None, confidence_scores)
-        metrics_raw_df['total_pessoas'] = persons_count
-
-        # Métricas dos dados suavizados (se aplicável)
-        metrics_smoothed_df = None
-        if apply_smoothing and smoothed_keypoints is not None:
-            metrics_smoothed_df = calcular_metricas_avancadas(smoothed_keypoints, None, confidence_scores)
-            metrics_smoothed_df['total_pessoas'] = persons_count
-
-        # Salva CSVs separados
-        metrics_raw_df.to_csv(output_dir / "raw_metrics.csv", index=False)
-        if metrics_smoothed_df is not None:
-            metrics_smoothed_df.to_csv(output_dir / "smoothed_metrics.csv", index=False)
-
-        # Gera relatórios independentes
-        gerar_relatorio_metricas(metrics_raw_df, output_dir, "raw")
-        if metrics_smoothed_df is not None:
-            gerar_relatorio_metricas(metrics_smoothed_df, output_dir, "smoothed")
+        # Retorna dados para geração de relatórios
+        return {
+            "raw_keypoints": all_keypoints,
+            "smoothed_keypoints": smoothed_keypoints,
+            "confidence_scores": confidence_scores,
+            "persons_count": persons_count
+        }
         
     except Exception as e:
         print(f"Erro geral na extração de keypoints: {str(e)}")
@@ -218,50 +221,76 @@ def extract_keypoints_extended(frames, output_dir, apply_smoothing=True, window_
         traceback.print_exc()
         return None
     
-def pipeline(video_path, output_dir, frame_rate=5, apply_smoothing=True, window_size=5):
+def pipeline(video_path, output_base_dir, class_name, frame_rate=15, apply_smoothing=True, window_size=5):
     """Pipeline para processamento de um único vídeo"""
     try:
         # Extração de frames
         print(f"Extraindo frames do vídeo {video_path}...")
         frames = extrair_frames(video_path, frame_rate)
         if not frames:
-            return {"status": "error", "message": "Nenhum frame extraído", "metrics_df": None}
+            return {"status": "error", "message": "Nenhum frame extraído"}
+        
+        # Pré-processamento
+        # frames = [
+        #     pre_processar_frame(
+        #         frame,
+        #         tamanho=(640, 480),
+        #         equalizar=True,
+        #         remover_ruido=True,
+        #         tracar_contorno=True
+        #     ) for frame in frames
+        # ]
+        
+        # Nome do vídeo para uso na estrutura de diretórios
+        video_name = Path(video_path).stem
         
         # Processamento de keypoints
         print(f"Processando keypoints com {'suavização' if apply_smoothing else 'configuração padrão'}...")
-        metrics_df = extract_keypoints_extended(
-            frames, output_dir, apply_smoothing=apply_smoothing, window_size=window_size
+        result = extract_keypoints_extended(frames, video_name, output_base_dir, class_name, apply_smoothing=apply_smoothing, window_size=window_size)
+        
+        if result is None:
+            return {"status": "error", "message": "Erro no processamento de keypoints"}
+        
+        # Criação de DataFrames para métricas
+        raw_metrics_df = calcular_metricas_avancadas(
+            result["raw_keypoints"], None, result["confidence_scores"]
         )
+        raw_metrics_df['total_pessoas'] = result["persons_count"]
+        raw_metrics_df['video'] = video_name
         
-        if metrics_df is None:
-            return {"status": "error", "message": "Erro no processamento de keypoints", "metrics_df": None}
-        
-        # Adiciona informação do vídeo ao DataFrame
-        video_name = Path(video_path).stem
-        metrics_df['video'] = video_name
-        
-        # Geração de relatório individual
-        nome_video = Path(video_path).stem
-        relatorio = gerar_relatorio_metricas(metrics_df, output_dir, nome_video)
+        # Métricas dos dados suavizados (se aplicável)
+        smoothed_metrics_df = None
+        if apply_smoothing and result["smoothed_keypoints"] is not None:
+            smoothed_metrics_df = calcular_metricas_avancadas(
+                result["smoothed_keypoints"], None, result["confidence_scores"]
+            )
+            smoothed_metrics_df['total_pessoas'] = result["persons_count"]
+            smoothed_metrics_df['video'] = video_name
         
         return {
             "status": "success",
-            "metrics_df": metrics_df,
-            "report": relatorio,
-            "frames_processed": len(frames),
-            "output_location": output_dir
+            "raw_metrics_df": raw_metrics_df,
+            "smoothed_metrics_df": smoothed_metrics_df,
+            "frames_processed": len(frames)
         }
         
     except Exception as e:
         print(f"Erro: {str(e)}")
-        return {"status": "error", "message": f"Erro: {str(e)}", "metrics_df": None}
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": f"Erro: {str(e)}"}
 
 
 def main():
     RAW_DIR = Path("data/raw")
     PROCESSED_DIR = Path("data/processed")
-    FRAME_RATE = 5
-
+    KEYPOINTS_DIR = PROCESSED_DIR / "keypoints"
+    FRAME_RATE = 15
+    
+    # Aplicar suavização (será feito para todos os vídeos)
+    APPLY_SMOOTHING = True
+    WINDOW_SIZE = 5
+    
     if not RAW_DIR.exists():
         print(f"Erro: Diretório {RAW_DIR} não encontrado.")
         return False
@@ -271,53 +300,70 @@ def main():
         print("Nenhum vídeo encontrado em data/raw/.")
         return False
 
-    # Lista para armazenar métricas de todos os vídeos
-    all_metrics_dfs = []
+    # Listas para armazenar métricas de todos os vídeos
+    all_raw_metrics = []
+    all_smoothed_metrics = []
     
     for video_path in videos:
-        class_name = video_path.parent.name
-        output_path = PROCESSED_DIR / "keypoints" / class_name / video_path.stem
-        print(f"\nProcessando: {video_path.name}")
+        class_name = video_path.parent.name  # "assault" ou "normal"
+        print(f"\nProcessando: {video_path.name} (Classe: {class_name})")
         
-        result = pipeline(str(video_path), str(output_path), frame_rate=FRAME_RATE)
+        result = pipeline(
+            str(video_path), 
+            str(KEYPOINTS_DIR),
+            class_name, 
+            frame_rate=FRAME_RATE, 
+            apply_smoothing=APPLY_SMOOTHING,
+            window_size=WINDOW_SIZE
+        )
         
         # Adiciona métricas ao conjunto global se sucesso
-        if result["status"] == "success" and result["metrics_df"] is not None:
+        if result["status"] == "success":
             # Adiciona informação da classe ao DataFrame
-            result["metrics_df"]["classe"] = class_name
-            all_metrics_dfs.append(result["metrics_df"])
+            result["raw_metrics_df"]["classe"] = class_name
+            all_raw_metrics.append(result["raw_metrics_df"])
+            
+            if result["smoothed_metrics_df"] is not None:
+                result["smoothed_metrics_df"]["classe"] = class_name
+                all_smoothed_metrics.append(result["smoothed_metrics_df"])
     
-    # Gera relatório geral se há métricas disponíveis
-    if all_metrics_dfs:
+    # Diretório para relatórios gerais
+    reports_dir = PROCESSED_DIR / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Gera relatório geral para dados não suavizados
+    if all_raw_metrics:
         # Combina todos os DataFrames
-        combined_metrics = pd.concat(all_metrics_dfs, ignore_index=True)
+        combined_raw_metrics = pd.concat(all_raw_metrics, ignore_index=True)
         
         # Salva métricas consolidadas
-        metrics_dir = PROCESSED_DIR / "metricas_consolidadas"
-        metrics_dir.mkdir(parents=True, exist_ok=True)
-        combined_metrics.to_csv(metrics_dir / "all_videos_metrics.csv", index=False)
+        combined_raw_metrics.to_csv(reports_dir / "no_smoothed_metrics.csv", index=False)
         
         # Gera relatório consolidado
-        gerar_relatorio_metricas(combined_metrics, metrics_dir)
+        gerar_relatorio_metricas(combined_raw_metrics, reports_dir, "no_smoothed")
         
         # Gera visualizações consolidadas
         try:
-            gerar_visualizacoes_metricas(combined_metrics, metrics_dir / "visualizacoes")
+            gerar_visualizacoes_metricas(combined_raw_metrics, reports_dir / "no_smoothed_visualizations")
         except Exception as e:
-            print(f"Aviso: Não foi possível gerar visualizações consolidadas - {str(e)}")
+            print(f"Aviso: Não foi possível gerar visualizações para dados não suavizados - {str(e)}")
+    
+    # Gera relatório geral para dados suavizados
+    if all_smoothed_metrics:
+        # Combina todos os DataFrames
+        combined_smoothed_metrics = pd.concat(all_smoothed_metrics, ignore_index=True)
         
-        # Gera análises por classe
+        # Salva métricas consolidadas
+        combined_smoothed_metrics.to_csv(reports_dir / "smoothed_metrics.csv", index=False)
+        
+        # Gera relatório consolidado
+        gerar_relatorio_metricas(combined_smoothed_metrics, reports_dir, "smoothed")
+        
+        # Gera visualizações consolidadas
         try:
-            # Agrupar por classe e calcular médias
-            class_metrics = combined_metrics.groupby('classe').mean(numeric_only=True).reset_index()
-            class_metrics.to_csv(metrics_dir / "class_average_metrics.csv", index=False)
-            
-            # Relatório por classe
-            for classe in class_metrics['classe'].unique():
-                class_data = combined_metrics[combined_metrics['classe'] == classe]
-                gerar_relatorio_metricas(class_data, metrics_dir, f"classe_{classe}")
+            gerar_visualizacoes_metricas(combined_smoothed_metrics, reports_dir / "smoothed_visualizations")
         except Exception as e:
-            print(f"Aviso: Erro ao gerar análises por classe - {str(e)}")
+            print(f"Aviso: Não foi possível gerar visualizações para dados suavizados - {str(e)}")
 
     print("\nProcessamento concluído para todos os vídeos.")
     return True
