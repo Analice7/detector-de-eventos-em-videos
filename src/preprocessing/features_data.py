@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import matplotlib
 import random
 import shutil
+import pandas as pd
+import seaborn as sns
 import os
 
 FEATURE_SIZE = 100  # Tamanho fixo para todas as features
@@ -261,54 +263,54 @@ def process_video_keypoints(keypoints_dir, output_dir=None, feature_type="all", 
         print(f"Erro ao processar vídeo {keypoints_dir}: {e}")
         return {}
 
-def process_dataset(base_keypoints_dir, output_base_dir, feature_type="all", normalize=True, window_size = 16):
-    """
-    Processa todos os vídeos no conjunto de dados.
-    
-    Args:
-        base_keypoints_dir: Diretório base com os keypoints
-        output_base_dir: Diretório base para salvar as características
-        feature_type: Tipo de característica a extrair
-        normalize: Se True, normaliza as características
-    """
+def process_dataset(base_keypoints_dir, output_base_dir, feature_type="all", normalize=True, window_size=16):
     base_keypoints_dir = Path(base_keypoints_dir)
-    output_base_dir = Path(output_base_dir)
-    
-    # Criar diretório de saída
-    output_base_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Para cada classe
+    stats = []
+
     for class_dir in base_keypoints_dir.iterdir():
         if not class_dir.is_dir():
             continue
-            
+        
         class_name = class_dir.name
-        class_output_dir = output_base_dir / class_name
-        class_output_dir.mkdir(parents=True, exist_ok=True)
-        
         print(f"Processando classe: {class_name}")
-        
-        # Para cada vídeo
+
         for video_dir in class_dir.iterdir():
             if not video_dir.is_dir():
                 continue
-                
+
             video_name = video_dir.name
-            video_output_dir = class_output_dir / video_name
-            
             print(f"  Extraindo características: {video_name}")
-            
-            process_video_keypoints(
-                keypoints_dir=f"{video_dir}/smoothed",
-                output_dir=str(video_output_dir),
-                feature_type=feature_type,
-                normalize=normalize,
-                window_size = 64
-            )
-    split(
-        base_dir='data/processed/sequences',
-        output_dir='data/splits'
-    )
+
+            keypoints_sequence = load_keypoints_sequence(video_dir / "smoothed")
+            if not keypoints_sequence:
+                continue
+
+            features_dict = extract_features(keypoints_sequence, feature_type, normalize)
+            if not features_dict:
+                continue
+
+            n_frames = len(next(iter(features_dict.values())))
+            feature_keys = sorted(features_dict.keys())
+            feature_sequence = np.zeros((n_frames, len(feature_keys)))
+
+            for i, key in enumerate(feature_keys):
+                feature_sequence[:, i] = features_dict[key]
+
+            windows = split_into_windows(feature_sequence, window_size)
+
+            # Cálculo da variação média das janelas (como proxy de informação útil)
+            if len(windows) > 0:
+                for w in windows:
+                    mean_std = np.mean(np.std(w, axis=0))  # média dos desvios padrão
+                    stats.append({
+                        "classe": class_name,
+                        "video": video_name,
+                        "feature_type": feature_type,
+                        "window_size": window_size,
+                        "variabilidade": mean_std
+                    })
+
+    return stats
 
 # Desabilitar mensagens de aviso do matplotlib para evitar problemas de QT
 warnings.filterwarnings("ignore")
@@ -372,19 +374,38 @@ def split_into_windows(sequence, window_size):
     return np.array(windows)
 
 if __name__ == "__main__":
-    # Configurações
-    KEYPOINTS_DIR = "data/processed/keypoints"
-    OUTPUT_DIR = "data/processed/sequences"
-    
-    print("Iniciando extração de características...")
-    
-    # Processar todo o conjunto de dados
-    process_dataset(
-        base_keypoints_dir=KEYPOINTS_DIR,
-        output_base_dir=OUTPUT_DIR,
-        feature_type="all",  # Extrair todos os tipos de características
-        normalize=True,       # Normalizar as características
-        window_size=64
-    )
 
-    print("Extração de características concluída!")
+    KEYPOINTS_DIR = "data/processed/keypoints"
+    FIXED_WINDOW_SIZE = 64
+    FEATURE_TYPES = ["position", "angle", "velocity", "all"]
+
+    all_stats = []
+
+    for FEATURE_TYPE in FEATURE_TYPES:
+        print(f"===== AVALIANDO FEATURE: {FEATURE_TYPE} com WINDOW_SIZE = {FIXED_WINDOW_SIZE} =====")
+        
+        stats = process_dataset(
+            base_keypoints_dir=KEYPOINTS_DIR,
+            output_base_dir="",  # Não estamos salvando arquivos
+            feature_type=FEATURE_TYPE,
+            normalize=True,
+            window_size=FIXED_WINDOW_SIZE
+        )
+        all_stats.extend(stats)
+
+    df_stats = pd.DataFrame(all_stats)
+
+    # Salvar os dados em CSV para análise posterior (opcional)
+    df_stats.to_csv("eficacia_features.csv", index=False)
+
+    # Plotar gráfico comparativo
+    plt.figure(figsize=(14, 6))
+    sns.boxplot(data=df_stats, x="feature_type", y="variabilidade", hue="classe")
+    plt.title(f"Eficácia dos vetores de características (window = {FIXED_WINDOW_SIZE})")
+    plt.xlabel("Tipo de Feature")
+    plt.ylabel("Variabilidade Média das Janelas")
+    plt.legend(title="Classe")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig("eficacia_comparacao_features.png")
+    plt.close()
