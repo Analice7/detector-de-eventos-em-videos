@@ -176,7 +176,7 @@ def extract_features(keypoints_sequence, feature_type="all", normalize=True):
     
     return features
 
-def process_video_keypoints(keypoints_dir, output_dir=None, feature_type="all", normalize=True, window_size = 30):
+def process_video_keypoints(keypoints_dir, output_dir=None, feature_type="all", normalize=True, window_size=30):
     """
     Processa os keypoints de um vídeo e extrai características.
     
@@ -261,7 +261,7 @@ def process_video_keypoints(keypoints_dir, output_dir=None, feature_type="all", 
         print(f"Erro ao processar vídeo {keypoints_dir}: {e}")
         return {}
 
-def process_dataset(base_keypoints_dir, output_base_dir, feature_type="all", normalize=True, window_size = 16):
+def process_dataset(base_keypoints_dir, output_base_dir, feature_type="all", normalize=True, window_size=16):
     """
     Processa todos os vídeos no conjunto de dados.
     
@@ -277,18 +277,27 @@ def process_dataset(base_keypoints_dir, output_base_dir, feature_type="all", nor
     # Criar diretório de saída
     output_base_dir.mkdir(parents=True, exist_ok=True)
     
-    # Para cada classe
-    for class_dir in base_keypoints_dir.iterdir():
+    # Ajustado para a nova estrutura: base_dir/smoothed/classe/video e base_dir/no_smoothed/classe/video
+    # Processar diretamente os dados suavizados
+    smoothed_dir = base_keypoints_dir / "smoothed"
+    
+    # Verificar se o diretório smoothed existe
+    if not smoothed_dir.exists():
+        print(f"Diretório de keypoints suavizados não encontrado: {smoothed_dir}")
+        return
+    
+    # Para cada classe dentro do diretório smoothed
+    for class_dir in smoothed_dir.iterdir():
         if not class_dir.is_dir():
             continue
             
-        class_name = class_dir.name
+        class_name = class_dir.name  # assault ou normal
         class_output_dir = output_base_dir / class_name
         class_output_dir.mkdir(parents=True, exist_ok=True)
         
         print(f"Processando classe: {class_name}")
         
-        # Para cada vídeo
+        # Para cada vídeo na classe
         for video_dir in class_dir.iterdir():
             if not video_dir.is_dir():
                 continue
@@ -299,12 +308,13 @@ def process_dataset(base_keypoints_dir, output_base_dir, feature_type="all", nor
             print(f"  Extraindo características: {video_name}")
             
             process_video_keypoints(
-                keypoints_dir=f"{video_dir}/smoothed",
+                keypoints_dir=video_dir,  # Path já está no formato correto: smoothed/classe/video
                 output_dir=str(video_output_dir),
                 feature_type=feature_type,
                 normalize=normalize,
-                window_size = 64
+                window_size=window_size
             )
+    
     split(
         base_dir='data/processed/sequences',
         output_dir='data/splits'
@@ -373,7 +383,7 @@ def split_into_windows(sequence, window_size):
 
 if __name__ == "__main__":
     # Configurações
-    KEYPOINTS_DIR = "data/processed/keypoints"
+    KEYPOINTS_DIR = "data/processed/keypoints"  # Diretório base contém "smoothed" e "no_smoothed"
     OUTPUT_DIR = "data/processed/sequences"
     
     print("Iniciando extração de características...")

@@ -11,12 +11,12 @@ import os
 class Config:
     SEED = 42
     BATCH_SIZE = 32
-    HIDDEN_SIZE = 128       # (e) tamanho do estado escondido
+    HIDDEN_SIZE = 512      # (e) tamanho do estado escondido
     NUM_LAYERS = 2
     DROPOUT = 0.3
     LEARNING_RATE = 0.001
     EPOCHS = 50
-    SEQUENCE_LENGTH = 10    # (t) número de timesteps
+    SEQUENCE_LENGTH = 64    # (t) número de timesteps
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Dataset customizado
