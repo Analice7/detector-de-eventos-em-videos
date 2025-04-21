@@ -8,26 +8,37 @@ from ..metrics.keypoints import (
     gerar_relatorio_metricas,
     calcular_metricas_avancadas,
 )
+from .tracker_ds import DeepSORTKeypointTracker
 import sys
 from src.preprocessing.dataProcesser import extrair_frames, pre_processar_frame
+# Importar a função de suavização do temporal_transformer
+from src.preprocessing.temporal_transformer import aplicar_suavizacao_temporal_tft_multipessoa, SimplifiedTFT
+
 
 def aplicar_suavizacao_temporal(keypoints_sequence, window_size=5):
-    """Aplica suavização temporal aos keypoints usando média móvel"""
-    smoothed_sequence = []
-    seq_len = len(keypoints_sequence)
-    
-    for i in range(seq_len):
-        start_idx = max(0, i - window_size // 2)
-        end_idx = min(seq_len, i + window_size // 2 + 1)
-        window = keypoints_sequence[start_idx:end_idx]
+    """Aplica suavização temporal aos keypoints usando média móvel ou TFT"""
+    try:
+        # Usar o SimplifiedTFT do módulo temporal_transformer
+        simplified_tft = SimplifiedTFT(window_size=window_size)
+        return simplified_tft.smooth_sequence(keypoints_sequence)
+    except Exception as e:
+        print(f"Erro ao aplicar TFT simplificado: {str(e)}. Usando média móvel padrão.")
+        # Implementação de fallback usando média móvel
+        smoothed_sequence = []
+        seq_len = len(keypoints_sequence)
         
-        # Verificar se todos os elementos em window têm a mesma forma
-        if window and all(w is not None and isinstance(w, np.ndarray) and w.shape == window[0].shape for w in window):
-            smoothed = np.mean(window, axis=0)
-        else:
-            smoothed = keypoints_sequence[i] if keypoints_sequence[i] is not None else np.array([])
-        smoothed_sequence.append(smoothed)
-    return smoothed_sequence
+        for i in range(seq_len):
+            start_idx = max(0, i - window_size // 2)
+            end_idx = min(seq_len, i + window_size // 2 + 1)
+            window = keypoints_sequence[start_idx:end_idx]
+            
+            # Verificar se todos os elementos em window têm a mesma forma
+            if window and all(w is not None and isinstance(w, np.ndarray) and w.shape == window[0].shape for w in window):
+                smoothed = np.mean(window, axis=0)
+            else:
+                smoothed = keypoints_sequence[i] if keypoints_sequence[i] is not None else np.array([])
+            smoothed_sequence.append(smoothed)
+        return smoothed_sequence
 
 def draw_keypoints(frame, keypoints, pose_connections):
     """Desenha keypoints e conexões no frame"""
@@ -61,8 +72,8 @@ def draw_keypoints(frame, keypoints, pose_connections):
     
     return frame_copy
 
-def extract_keypoints_extended(frames, video_name, output_base_dir,  class_name,apply_smoothing=False, window_size=5):
-    """Processa os frames e extrai keypoints"""
+def extract_keypoints_extended(frames, video_name, output_base_dir, class_name, apply_smoothing=False, window_size=5, use_tft=True):
+    """Processa os frames e extrai keypoints, com rastreamento DeepSORT e suavização TFT"""
     try:
         model = YOLO('yolov8n-pose.pt')
         
@@ -79,12 +90,16 @@ def extract_keypoints_extended(frames, video_name, output_base_dir,  class_name,
             smoothed_dir = base_dir / "smoothed" / class_name / video_name
             smoothed_dir.mkdir(parents=True, exist_ok=True)
         
+        # Inicializa rastreador DeepSORT
+        tracker = DeepSORTKeypointTracker(max_age=30, min_hits=3, iou_threshold=0.2)
+        
         all_keypoints = []
         all_persons_keypoints = []  # Lista para armazenar keypoints de todas as pessoas
+        tracked_persons_keypoints = []  # Lista para armazenar keypoints rastreados
         confidence_scores = []
         persons_count = []  # Lista para armazenar o número de pessoas em cada frame
         
-        print("Processando frames...")
+        print("Processando frames e aplicando rastreamento DeepSORT...")
         for idx, frame in enumerate(frames):
             try:
                 # Validação do frame
@@ -92,6 +107,7 @@ def extract_keypoints_extended(frames, video_name, output_base_dir,  class_name,
                     print(f"Frame {idx}: Vazio/corrompido - pulando")
                     all_keypoints.append(None)
                     all_persons_keypoints.append([])
+                    tracked_persons_keypoints.append([])
                     confidence_scores.append(None)
                     persons_count.append(0)
                     continue
@@ -107,6 +123,7 @@ def extract_keypoints_extended(frames, video_name, output_base_dir,  class_name,
                 if not results or len(results) == 0:
                     all_keypoints.append(None)
                     all_persons_keypoints.append([])
+                    tracked_persons_keypoints.append([])
                     confidence_scores.append(None)
                     persons_count.append(0)
                     continue
@@ -117,6 +134,7 @@ def extract_keypoints_extended(frames, video_name, output_base_dir,  class_name,
                     print(f"Frame {idx}: Nenhum keypoint detectado")
                     all_keypoints.append(None)
                     all_persons_keypoints.append([])
+                    tracked_persons_keypoints.append([])
                     confidence_scores.append(None)
                     persons_count.append(0)
                     continue
@@ -125,19 +143,26 @@ def extract_keypoints_extended(frames, video_name, output_base_dir,  class_name,
                 frame_keypoints = kps_data.xyn.cpu().numpy()  # Todos os keypoints de todas as pessoas
                 frame_conf = kps_data.conf.cpu().numpy() if hasattr(kps_data, 'conf') and kps_data.conf is not None else None
                 
+                # Aplicar rastreamento DeepSORT
+                tracked_keypoints = tracker.update(frame_keypoints, frame)
+                
                 # Salva e armazena keypoints
-                if len(frame_keypoints) > 0:
-                    # Salva os keypoints de todas as pessoas detectadas
-                    np.save(no_smoothed_dir / f"frame_{idx:05d}.npy", frame_keypoints)
+                if len(tracked_keypoints) > 0:
+                    # Salva os keypoints rastreados
+                    np.save(no_smoothed_dir / f"frame_{idx:05d}.npy", tracked_keypoints)
                     
-                    # Armazena keypoints da primeira pessoa para análises tradicionais
-                    all_keypoints.append(frame_keypoints[0])
+                    # Armazena keypoints da primeira pessoa para análises tradicionais (se existir)
+                    if len(tracked_keypoints) > 0:
+                        all_keypoints.append(tracked_keypoints[0])
+                    else:
+                        all_keypoints.append(None)
                     
-                    # Armazena keypoints de todas as pessoas para novas análises
-                    all_persons_keypoints.append(frame_keypoints)
+                    # Armazena keypoints originais e rastreados
+                    all_persons_keypoints.append(frame_keypoints)  # Original
+                    tracked_persons_keypoints.append(tracked_keypoints)  # Rastreado
                     
                     # Armazena confiança da primeira pessoa
-                    if frame_conf is not None:
+                    if frame_conf is not None and len(tracked_keypoints) > 0 and len(frame_conf) > 0:
                         if len(frame_conf.shape) == 2:  # Se for 2D (várias pessoas)
                             confidence_scores.append(frame_conf[0])
                         else:  # Se for 1D (uma pessoa apenas)
@@ -146,10 +171,11 @@ def extract_keypoints_extended(frames, video_name, output_base_dir,  class_name,
                         confidence_scores.append(None)
                     
                     # Conta pessoas detectadas
-                    persons_count.append(len(frame_keypoints))
+                    persons_count.append(len(tracked_keypoints))
                 else:
                     all_keypoints.append(None)
                     all_persons_keypoints.append([])
+                    tracked_persons_keypoints.append([])
                     confidence_scores.append(None)
                     persons_count.append(0)
                 
@@ -157,55 +183,85 @@ def extract_keypoints_extended(frames, video_name, output_base_dir,  class_name,
                 print(f"Erro no frame {idx}: {str(e)}")
                 all_keypoints.append(None)
                 all_persons_keypoints.append([])
+                tracked_persons_keypoints.append([])
                 confidence_scores.append(None)
                 persons_count.append(0)
         
         # Suavização temporal
         smoothed_keypoints = None
-        if apply_smoothing and any(len(frame_kps) > 0 for frame_kps in all_persons_keypoints):
-            print("Aplicando suavização temporal a TODAS as pessoas...")
-            try:
-                # 1. Determina o número máximo de pessoas detectadas em qualquer frame
-                max_pessoas = max(len(frame_kps) for frame_kps in all_persons_keypoints)
-                
-                # 2. Suaviza cada pessoa individualmente
-                pessoas_suavizadas = []
-                for pessoa_idx in range(max_pessoas):
-                    # Coleta a sequência dessa pessoa em todos os frames
-                    sequencia_pessoa = []
-                    for frame_kps in all_persons_keypoints:
-                        if pessoa_idx < len(frame_kps):
-                            sequencia_pessoa.append(frame_kps[pessoa_idx])
-                        else:
-                            sequencia_pessoa.append(np.array([]))  # Placeholder se não detectado
+        if apply_smoothing and any(len(frame_kps) > 0 for frame_kps in tracked_persons_keypoints):
+            if use_tft:
+                print("Aplicando suavização temporal com TFT a TODAS as pessoas (com rastreamento)...")
+                try:
+                    # Usar o TFT completo para suavização avançada
+                    smoothed_by_frame = aplicar_suavizacao_temporal_tft_multipessoa(
+                        tracked_persons_keypoints,  # Usamos keypoints já rastreados
+                        window_size=window_size,
+                        hidden_dim=64,
+                        device='cpu'
+                    )
                     
-                    # Aplica suavização a essa pessoa
-                    pessoa_suavizada = aplicar_suavizacao_temporal(sequencia_pessoa, window_size)
-                    pessoas_suavizadas.append(pessoa_suavizada)
-                
-                # 3. Reorganiza os dados por frame
-                smoothed_by_frame = []
-                for frame_idx in range(len(all_persons_keypoints)):
-                    frame_data = []
-                    for pessoa_idx in range(max_pessoas):
-                        if frame_idx < len(pessoas_suavizadas[pessoa_idx]):
-                            kp = pessoas_suavizadas[pessoa_idx][frame_idx]
-                            if kp.size > 0:  # Filtra arrays vazios
-                                frame_data.append(kp)
+                    # Salva os resultados do TFT
+                    for idx, frame_kps in enumerate(smoothed_by_frame):
+                        if len(frame_kps) > 0:
+                            np.save(smoothed_dir / f"frame_{idx:05d}.npy", frame_kps)
                     
-                    smoothed_by_frame.append(np.array(frame_data) if frame_data else np.array([]))
-                
-                # 4. Salva os resultados
-                for idx, frame_kps in enumerate(smoothed_by_frame):
-                    if len(frame_kps) > 0:
-                        np.save(smoothed_dir / f"frame_{idx:05d}.npy", frame_kps)
-                
-                # Mantém compatibilidade com o resto do código (opcional)
-                smoothed_keypoints = [frame_kps[0] if len(frame_kps) > 0 else None for frame_kps in smoothed_by_frame]
-                
-            except Exception as e:
-                print(f"Erro na suavização multi-pessoa: {str(e)}")
-                smoothed_keypoints = None
+                    # Mantém compatibilidade com o resto do código
+                    smoothed_keypoints = [frame_kps[0] if len(frame_kps) > 0 else None for frame_kps in smoothed_by_frame]
+                    
+                except Exception as e:
+                    print(f"Erro na suavização TFT: {str(e)}. Usando SimplifiedTFT como fallback...")
+                    use_tft = False  # Falhar para o método simplificado
+            
+            # Se não estiver usando TFT ou se TFT falhou
+            if not use_tft:
+                print("Aplicando suavização simplificada a TODAS as pessoas (com rastreamento)...")
+                try:
+                    # Determina o número máximo de IDs detectados
+                    max_pessoas = max((len(frame_kps) for frame_kps in tracked_persons_keypoints), default=0)
+                    
+                    # Organiza os keypoints por ID de pessoa
+                    pessoas_por_id = [[] for _ in range(max_pessoas)]
+                    
+                    # Para cada frame
+                    for frame_kps in tracked_persons_keypoints:
+                        # Para cada ID possível
+                        for pessoa_idx in range(max_pessoas):
+                            if pessoa_idx < len(frame_kps):
+                                pessoas_por_id[pessoa_idx].append(frame_kps[pessoa_idx])
+                            else:
+                                pessoas_por_id[pessoa_idx].append(np.array([]))
+                    
+                    # Aplica suavização para cada pessoa
+                    pessoas_suavizadas = []
+                    for sequencia_pessoa in pessoas_por_id:
+                        pessoa_suavizada = aplicar_suavizacao_temporal(sequencia_pessoa, window_size)
+                        pessoas_suavizadas.append(pessoa_suavizada)
+                    
+                    # Reorganiza por frame
+                    smoothed_by_frame = []
+                    for frame_idx in range(len(tracked_persons_keypoints)):
+                        frame_data = []
+                        for pessoa_idx in range(max_pessoas):
+                            if (pessoa_idx < len(pessoas_suavizadas) and 
+                                frame_idx < len(pessoas_suavizadas[pessoa_idx])):
+                                kp = pessoas_suavizadas[pessoa_idx][frame_idx]
+                                if kp is not None and kp.size > 0:
+                                    frame_data.append(kp)
+                        
+                        smoothed_by_frame.append(np.array(frame_data) if frame_data else np.array([]))
+                    
+                    # Salva os resultados
+                    for idx, frame_kps in enumerate(smoothed_by_frame):
+                        if len(frame_kps) > 0:
+                            np.save(smoothed_dir / f"frame_{idx:05d}.npy", frame_kps)
+                    
+                    # Mantém compatibilidade com o resto do código
+                    smoothed_keypoints = [frame_kps[0] if len(frame_kps) > 0 else None for frame_kps in smoothed_by_frame]
+                    
+                except Exception as e:
+                    print(f"Erro na suavização multi-pessoa: {str(e)}")
+                    smoothed_keypoints = None
         
         # Retorna dados para geração de relatórios
         return {
@@ -221,7 +277,7 @@ def extract_keypoints_extended(frames, video_name, output_base_dir,  class_name,
         traceback.print_exc()
         return None
     
-def pipeline(video_path, output_base_dir, class_name, frame_rate=15, apply_smoothing=True, window_size=5):
+def pipeline(video_path, output_base_dir, class_name, frame_rate=15, apply_smoothing=True, window_size=5, use_tft=True):
     """Pipeline para processamento de um único vídeo"""
     try:
         # Extração de frames
@@ -245,8 +301,15 @@ def pipeline(video_path, output_base_dir, class_name, frame_rate=15, apply_smoot
         video_name = Path(video_path).stem
         
         # Processamento de keypoints
-        print(f"Processando keypoints com {'suavização' if apply_smoothing else 'configuração padrão'}...")
-        result = extract_keypoints_extended(frames, video_name, output_base_dir, class_name, apply_smoothing=apply_smoothing, window_size=window_size)
+        metodo_suavizacao = "TFT" if use_tft else "simplificada"
+        tracking_info = "com rastreamento DeepSORT"
+        print(f"Processando keypoints {tracking_info} e {'suavização ' + metodo_suavizacao if apply_smoothing else 'configuração padrão'}...")
+        result = extract_keypoints_extended(
+            frames, video_name, output_base_dir, class_name, 
+            apply_smoothing=apply_smoothing, 
+            window_size=window_size,
+            use_tft=use_tft
+        )
         
         if result is None:
             return {"status": "error", "message": "Erro no processamento de keypoints"}
@@ -257,6 +320,7 @@ def pipeline(video_path, output_base_dir, class_name, frame_rate=15, apply_smoot
         )
         raw_metrics_df['total_pessoas'] = result["persons_count"]
         raw_metrics_df['video'] = video_name
+        raw_metrics_df['tracking'] = "DeepSORT"
         
         # Métricas dos dados suavizados (se aplicável)
         smoothed_metrics_df = None
@@ -266,6 +330,9 @@ def pipeline(video_path, output_base_dir, class_name, frame_rate=15, apply_smoot
             )
             smoothed_metrics_df['total_pessoas'] = result["persons_count"]
             smoothed_metrics_df['video'] = video_name
+            smoothed_metrics_df['tracking'] = "DeepSORT"
+            # Adicionar informação sobre o método de suavização usado
+            smoothed_metrics_df['metodo_suavizacao'] = metodo_suavizacao
         
         return {
             "status": "success",
@@ -287,9 +354,10 @@ def main():
     KEYPOINTS_DIR = PROCESSED_DIR / "keypoints"
     FRAME_RATE = 15
     
-    # Aplicar suavização (será feito para todos os vídeos)
+    # Configurações de suavização
     APPLY_SMOOTHING = True
     WINDOW_SIZE = 5
+    USE_TFT = True  # Define se usa o TFT ou a versão simplificada
     
     if not RAW_DIR.exists():
         print(f"Erro: Diretório {RAW_DIR} não encontrado.")
@@ -314,7 +382,8 @@ def main():
             class_name, 
             frame_rate=FRAME_RATE, 
             apply_smoothing=APPLY_SMOOTHING,
-            window_size=WINDOW_SIZE
+            window_size=WINDOW_SIZE,
+            use_tft=USE_TFT
         )
         
         # Adiciona métricas ao conjunto global se sucesso
@@ -365,7 +434,9 @@ def main():
         except Exception as e:
             print(f"Aviso: Não foi possível gerar visualizações para dados suavizados - {str(e)}")
 
-    print("\nProcessamento concluído para todos os vídeos.")
+    # Método de suavização usado
+    metodo = "TFT" if USE_TFT else "SimplifiedTFT"
+    print(f"\nProcessamento concluído para todos os vídeos. Método de suavização: {metodo} com rastreamento DeepSORT")
     return True
 
 
