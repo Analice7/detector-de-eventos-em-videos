@@ -6,37 +6,47 @@ import matplotlib
 import random
 import shutil
 import os
+from .representation import calculate_velocity, calculate_acceleration
 
 FEATURE_SIZE = 100  # Tamanho fixo para todas as features
 
 def load_keypoints_sequence(keypoints_dir):
-    """Carrega a sequência de keypoints dos arquivos .npy"""
+    """Carrega a sequência de keypoints dos arquivos .npy para todas as pessoas"""
     keypoints_dir = Path(keypoints_dir)
     files = sorted(list(keypoints_dir.glob("frame_*.npy")))
     
-    sequence = []
+    # Dicionário para armazenar sequências de cada pessoa
+    person_sequences = {}
+    
     for file in files:
         try:
             keypoints = np.load(file)
             
-            # Verificar se o array tem formato válido
-            if len(keypoints.shape) == 3 and keypoints.shape[0] > 0 and keypoints.shape[1] > 0:
-                sequence.append(keypoints[0])  # Primeira pessoa detectada
+            # Se for formato 3D (múltiplas pessoas)
+            if len(keypoints.shape) == 3 and keypoints.shape[0] > 0:
+                for person_idx in range(keypoints.shape[0]):
+                    if person_idx not in person_sequences:
+                        person_sequences[person_idx] = []
+                    person_sequences[person_idx].append(keypoints[person_idx])
+            
+            # Se for formato 2D (uma única pessoa)
             elif len(keypoints.shape) == 2 and keypoints.shape[0] > 0:
-                sequence.append(keypoints)     # Array já formatado corretamente
-            else:
-                # Array vazio ou formato inválido, pular este frame
-                continue
+                if 0 not in person_sequences:
+                    person_sequences[0] = []
+                person_sequences[0].append(keypoints)
                 
         except Exception as e:
             print(f"Erro ao carregar {file}: {e}")
     
-    # Verificar se há keypoints válidos
-    if not sequence:
+    # Verificar se há alguma sequência válida
+    if not person_sequences:
         print(f"Nenhum keypoint válido encontrado em {keypoints_dir}")
         return []
+
+    for person_id in person_sequences:
+        person_sequences[person_id] = np.array(person_sequences[person_id])
     
-    return sequence
+    return person_sequences
 
 def calculate_angle(p1, p2, p3):
     """Calcula o ângulo entre três pontos (p1-p2-p3)"""
@@ -64,47 +74,47 @@ def extract_features(keypoints_sequence, feature_type="all", normalize=True):
     Extrai características dos keypoints.
     
     Args:
-        keypoints_sequence: Lista de arrays de keypoints
-        feature_type: Tipo de característica ('position', 'angle', 'velocity', 'all')
+        keypoints_sequence: Dicionário de arrays de keypoints por pessoa
+        feature_type: Tipo de característica ('position', 'angle', 'velocity', 'acceleration', 'all')
         normalize: Se True, normaliza as características
     
     Returns:
         Dicionário com as características extraídas
     """
-    if not keypoints_sequence:
+    # Verificar se keypoints_sequence é um dicionário ou um array
+    if isinstance(keypoints_sequence, dict):
+        # Se for um dicionário, vamos usar apenas a primeira pessoa (pessoa 0)
+        if 0 in keypoints_sequence:
+            keypoints_array = keypoints_sequence[0]
+        else:
+            # Use a primeira chave disponível no dicionário
+            first_key = next(iter(keypoints_sequence))
+            keypoints_array = keypoints_sequence[first_key]
+    else:
+        # Se já for um array, use-o diretamente
+        keypoints_array = keypoints_sequence
+    
+    if keypoints_array.size == 0:
         return {}
     
     features = {}
-    n_frames = len(keypoints_sequence)
+    n_frames = keypoints_array.shape[0]
     
-    # Verificar forma do primeiro keypoint para determinar quantos pontos temos
-    n_keypoints = keypoints_sequence[0].shape[0]
+    # Verificar forma para determinar quantos pontos temos
+    n_keypoints = keypoints_array.shape[1] if len(keypoints_array.shape) > 1 else 0
     
     # 1. Posições absolutas
     if feature_type in ["position", "all"]:
         for i in range(n_keypoints):
             try:
-                # Usar lista por compreensão com verificação de índice
-                x_coords = []
-                y_coords = []
-                
-                for keypoints in keypoints_sequence:
-                    if i < keypoints.shape[0] and keypoints.shape[1] >= 2:
-                        x_coords.append(keypoints[i, 0])
-                        y_coords.append(keypoints[i, 1])
-                    else:
-                        # Se o keypoint não existir neste frame, usar valor anterior ou zero
-                        x_val = x_coords[-1] if x_coords else 0
-                        y_val = y_coords[-1] if y_coords else 0
-                        x_coords.append(x_val)
-                        y_coords.append(y_val)
-                
-                # Converter para arrays numpy
-                x_coords = np.array(x_coords)
-                y_coords = np.array(y_coords)
-                
-                features[f"kp{i}_x"] = x_coords
-                features[f"kp{i}_y"] = y_coords
+                # Verificar se o keypoint existe em todos os frames
+                if i < keypoints_array.shape[1]:
+                    # Extrair coordenadas x e y
+                    x_coords = keypoints_array[:, i, 0] if keypoints_array.shape[2] > 0 else np.zeros(n_frames)
+                    y_coords = keypoints_array[:, i, 1] if keypoints_array.shape[2] > 1 else np.zeros(n_frames)
+                    
+                    features[f"kp{i}_x"] = x_coords
+                    features[f"kp{i}_y"] = y_coords
                 
             except Exception as e:
                 print(f"Erro ao processar keypoint {i}: {e}")
@@ -125,40 +135,70 @@ def extract_features(keypoints_sequence, feature_type="all", normalize=True):
             try:
                 angles = np.zeros(n_frames)
                 
-                for i, keypoints in enumerate(keypoints_sequence):
-                    try:
-                        # Verificar se todos os keypoints necessários estão presentes
-                        if (max(p1_idx, p2_idx, p3_idx) < keypoints.shape[0] and
-                            keypoints.shape[1] >= 2):
-                            p1 = keypoints[p1_idx]
-                            p2 = keypoints[p2_idx]
-                            p3 = keypoints[p3_idx]
+                # Verificar se todos os índices estão dentro dos limites
+                max_idx = max(p1_idx, p2_idx, p3_idx)
+                if max_idx < keypoints_array.shape[1] and keypoints_array.shape[2] >= 2:
+                    for i in range(n_frames):
+                        try:
+                            p1 = keypoints_array[i, p1_idx, :2]  # Usar apenas x,y
+                            p2 = keypoints_array[i, p2_idx, :2]
+                            p3 = keypoints_array[i, p3_idx, :2]
                             angles[i] = calculate_angle(p1, p2, p3)
-                    except Exception:
-                        # Se algum keypoint estiver ausente ou erro no cálculo, usar zero
-                        angles[i] = angles[i-1] if i > 0 else 0
+                        except Exception:
+                            # Se houver erro no cálculo, usar valor anterior ou zero
+                            angles[i] = angles[i-1] if i > 0 else 0
                 
-                features[f"angle_{name}"] = angles
+                    features[f"angle_{name}"] = angles
                 
             except Exception as e:
                 print(f"Erro ao calcular ângulo {name}: {e}")
                 continue
     
-    # 3. Velocidades (derivadas de primeira ordem)
+    # 3. Velocidades (usando a função melhorada)
     if feature_type in ["velocity", "all"]:
-        # Para cada posição, calcular a velocidade
-        position_keys = [k for k in features.keys() if k.startswith("kp")]
-        
-        for key in position_keys:
-            try:
-                values = features[key]
-                velocity = np.zeros_like(values)
-                velocity[1:] = values[1:] - values[:-1]
+        try:
+            # Calcular velocidades para todos os keypoints de uma vez
+            velocities = calculate_velocity(keypoints_array)
+            
+            # Lidar com a diferença de tamanho (velocidade tem n_frames-1)
+            vel_pad = np.zeros((1, velocities.shape[1], velocities.shape[2]))
+            velocities_padded = np.concatenate([vel_pad, velocities], axis=0)  # Adiciona um frame zero no início
+            
+            # Extrair componentes x e y da velocidade para cada keypoint
+            for i in range(n_keypoints):
+                if i < velocities_padded.shape[1]:
+                    features[f"kp{i}_x_vel"] = velocities_padded[:, i, 0]
+                    features[f"kp{i}_y_vel"] = velocities_padded[:, i, 1]
+                    
+                    # Calcular magnitude da velocidade
+                    magnitude = np.sqrt(velocities_padded[:, i, 0]**2 + velocities_padded[:, i, 1]**2)
+                    features[f"kp{i}_vel_magnitude"] = magnitude
                 
-                features[f"{key}_vel"] = velocity
-            except Exception as e:
-                print(f"Erro ao calcular velocidade para {key}: {e}")
-                continue  
+        except Exception as e:
+            print(f"Erro ao calcular velocidades: {e}")
+    
+    # 4. Acelerações
+    if feature_type in ["acceleration", "all"]:
+        try:
+            # Calcular acelerações para todos os keypoints de uma vez
+            accelerations = calculate_acceleration(keypoints_array)
+            
+            # Lidar com a diferença de tamanho (aceleração tem n_frames-2)
+            acc_pad = np.zeros((2, accelerations.shape[1], accelerations.shape[2]))
+            accelerations_padded = np.concatenate([acc_pad, accelerations], axis=0)  # Adiciona dois frames zero no início
+            
+            # Extrair componentes x e y da aceleração para cada keypoint
+            for i in range(n_keypoints):
+                if i < accelerations_padded.shape[1]:
+                    features[f"kp{i}_x_acc"] = accelerations_padded[:, i, 0]
+                    features[f"kp{i}_y_acc"] = accelerations_padded[:, i, 1]
+                    
+                    # Calcular magnitude da aceleração
+                    magnitude = np.sqrt(accelerations_padded[:, i, 0]**2 + accelerations_padded[:, i, 1]**2)
+                    features[f"kp{i}_acc_magnitude"] = magnitude
+                
+        except Exception as e:
+            print(f"Erro ao calcular acelerações: {e}")
     
     # Normalização
     if normalize and features:
@@ -172,7 +212,6 @@ def extract_features(keypoints_sequence, feature_type="all", normalize=True):
                     features[key] = (values - min_val) / (max_val - min_val)
             except Exception as e:
                 print(f"Erro ao normalizar {key}: {e}")
-                # Manter o valor original em caso de erro
     
     return features
 
@@ -261,7 +300,7 @@ def process_video_keypoints(keypoints_dir, output_dir=None, feature_type="all", 
         print(f"Erro ao processar vídeo {keypoints_dir}: {e}")
         return {}
 
-def process_dataset(base_keypoints_dir, output_base_dir, feature_type="all", normalize=True, window_size=16):
+def process_dataset(process_type, base_keypoints_dir, output_base_dir, feature_type="all", normalize=True, window_size=16):
     """
     Processa todos os vídeos no conjunto de dados.
     
@@ -277,17 +316,13 @@ def process_dataset(base_keypoints_dir, output_base_dir, feature_type="all", nor
     # Criar diretório de saída
     output_base_dir.mkdir(parents=True, exist_ok=True)
     
-    # Ajustado para a nova estrutura: base_dir/smoothed/classe/video e base_dir/no_smoothed/classe/video
-    # Processar diretamente os dados suavizados
-    smoothed_dir = base_keypoints_dir / "smoothed"
-    
     # Verificar se o diretório smoothed existe
-    if not smoothed_dir.exists():
-        print(f"Diretório de keypoints suavizados não encontrado: {smoothed_dir}")
+    if not base_keypoints_dir.exists():
+        print(f"Diretório de keypoints suavizados não encontrado: {base_keypoints_dir}")
         return
     
-    # Para cada classe dentro do diretório smoothed
-    for class_dir in smoothed_dir.iterdir():
+    # Para cada classe dentro dos diretórios
+    for class_dir in base_keypoints_dir.iterdir():
         if not class_dir.is_dir():
             continue
             
@@ -308,7 +343,7 @@ def process_dataset(base_keypoints_dir, output_base_dir, feature_type="all", nor
             print(f"  Extraindo características: {video_name}")
             
             process_video_keypoints(
-                keypoints_dir=video_dir,  # Path já está no formato correto: smoothed/classe/video
+                keypoints_dir=video_dir,  
                 output_dir=str(video_output_dir),
                 feature_type=feature_type,
                 normalize=normalize,
@@ -316,8 +351,8 @@ def process_dataset(base_keypoints_dir, output_base_dir, feature_type="all", nor
             )
     
     split(
-        base_dir='data/processed/sequences',
-        output_dir='data/splits'
+        base_dir='data/processed/sequences/'+process_type,
+        output_dir='data/splits/'+process_type
     )
 
 # Desabilitar mensagens de aviso do matplotlib para evitar problemas de QT
@@ -373,28 +408,37 @@ def split(base_dir, output_dir, ratios=(0.7, 0.1, 0.2), seed=42):
             dst = f'{output_dir}/test/{classe}/{video}'
             shutil.copytree(src, dst)
 
-def split_into_windows(sequence, window_size):
-    # Processamento em janelas de tempo
+def split_into_windows(sequence, window_size, overlap=0.5):
     windows = []
     n_frames = sequence.shape[0]
-    for i in range(0, n_frames - window_size + 1, window_size):
+    step = int(window_size * (1 - overlap))
+    
+    for i in range(0, n_frames - window_size + 1, step):
         windows.append(sequence[i:i+window_size])
-    return np.array(windows)
+    
+    # Se não houve nenhuma janela completa, pega o que tiver
+    if not windows and n_frames > 0:
+        last_window = sequence[-window_size:] if n_frames >= window_size else sequence
+        windows.append(last_window)
+    
+    return np.array(windows) if windows else np.zeros((1, window_size, sequence.shape[1]))
 
 if __name__ == "__main__":
     # Configurações
-    KEYPOINTS_DIR = "data/processed/keypoints"  # Diretório base contém "smoothed" e "no_smoothed"
-    OUTPUT_DIR = "data/processed/sequences"
+    KEYPOINTS_DIR = "data/processed/keypoints/"  # Diretório base contém "smoothed" e "no_smoothed"
+    OUTPUT_DIR = "data/processed/sequences/"
     
     print("Iniciando extração de características...")
     
     # Processar todo o conjunto de dados
-    process_dataset(
-        base_keypoints_dir=KEYPOINTS_DIR,
-        output_base_dir=OUTPUT_DIR,
-        feature_type="all",  # Extrair todos os tipos de características
-        normalize=True,       # Normalizar as características
-        window_size=64
-    )
+    for process_type in ['no_smoothed', 'smoothed']:
+        process_dataset(
+            process_type,
+            base_keypoints_dir=KEYPOINTS_DIR + process_type,
+            output_base_dir=OUTPUT_DIR + process_type,
+            feature_type="all",  # Extrair todos os tipos de características
+            normalize=True,       # Normalizar as características
+            window_size=64
+        )
 
     print("Extração de características concluída!")
