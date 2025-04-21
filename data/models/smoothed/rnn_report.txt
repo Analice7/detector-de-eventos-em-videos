@@ -1,0 +1,11 @@
+Test Accuracy: 0.5426
+
+Classification Report:
+              precision    recall  f1-score   support
+
+      normal       0.55      0.88      0.68        51
+     assault       0.50      0.14      0.22        43
+
+    accuracy                           0.54        94
+   macro avg       0.52      0.51      0.45        94
+weighted avg       0.53      0.54      0.47        94

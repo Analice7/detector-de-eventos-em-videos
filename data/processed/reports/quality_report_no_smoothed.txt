@@ -1,0 +1,21 @@
+=== RELATÓRIO DE QUALIDADE DE DETECÇÃO DE KEYPOINTS === - no_smoothed
+
+ESTATÍSTICAS GERAIS:
+Total de frames analisados: 18323
+Média de pessoas por frame: 2.65
+
+CONFIANÇA DA DETECÇÃO:
+Média: 0.3800
+Mínima: 0.0000
+Desvio padrão: 0.1656
+
+ESTABILIDADE TEMPORAL:
+Velocidade média: 0.0646
+Aceleração média: 0.0829
+Jitter médio: 0.3814
+
+CONCLUSÃO:
+Qualidade geral da detecção: Não foi possível avaliar
+
+RECOMENDAÇÕES:
+- Detecção adequada para a maioria das aplicações
